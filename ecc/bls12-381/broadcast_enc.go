@@ -2,8 +2,11 @@ package bls12381
 
 import (
 	"fmt"
-	//"bytes"
+	"os"
+	"time"
+	"bytes"
 	"math/big"
+	mrand "math/rand"
 	"crypto/sha256"
 	"crypto/rand"
 	"crypto/aes"
@@ -21,13 +24,13 @@ type PK struct{
 	P1 []G1
 	P2 []G2
 	Q G2
-	N uint64
+	N int
 }
 
 //a BE decryption key consists of the party id and a G2 element dk
 
 type DK struct{
-	partyID uint64
+	partyID int
 	dk G2
 }
 
@@ -41,8 +44,8 @@ type CT struct{
 
 // symmetric-key encryption implemented using AES-GCM
 
-func SymEncrypt(key []byte, plaintext string) ([]byte){
-	plaintextBytes := []byte(plaintext)
+func SymEncrypt(key []byte, plaintextBytes []byte) ([]byte){
+	//plaintextBytes := []byte(plaintext)
 	block, _ := aes.NewCipher(key)
 	gcm, _ := cipher.NewGCM(block)
 	nonce := make([]byte, gcm.NonceSize())
@@ -75,12 +78,36 @@ func randBigInt() (*big.Int){
 	return n
 }
 
+func randSet(max int, setSize int) ([]int){
+	if max <= 0 || setSize <= 0{
+		return []int{}
+	}
+	set := make([]int, setSize)
+	for i := 0; i < setSize; i++{
+		for true {
+			set[i] = mrand.Intn(max) + 1
+			present := false
+			for j := 0 ; j < i ; j++ {
+				if set[i] == set[j] {
+					present = true
+					break
+				}
+			}
+			if !present {
+				break
+			}
+			// Element already exists in the set. Need to regenerate a random value.
+		}
+	}
+	return set
+}
+
 // function to generate a BE public key
 
-func GenPK(numParties uint64, gen1Aff G1, gen2Aff G2, bAlpha *big.Int, bX *big.Int) (PK){
+func GenPK(numParties int, gen1Aff G1, gen2Aff G2, bAlpha *big.Int, bX *big.Int) (PK){
 	var pk PK
 	var alpha fr.Element
-	var i uint64
+	var i int
 	pk.N = numParties
 	pk.P1 = make([]G1, 2*numParties)
 	pk.P2 = make([]G2, 2*numParties)
@@ -109,10 +136,10 @@ func GenPK(numParties uint64, gen1Aff G1, gen2Aff G2, bAlpha *big.Int, bX *big.I
 
 // function to generate a BE secret key
 
-func GenSK(partyID uint64, Q G2, bAlpha *big.Int) (DK){
+func GenSK(partyID int, Q G2, bAlpha *big.Int) (DK){
 	var dk DK
 	dk.partyID = partyID
-	var j uint64
+	var j int
 	dk.dk = Q
 	for j = 0; j < partyID; j++{
 		dk.dk.ScalarMultiplication(&dk.dk, bAlpha)
@@ -123,12 +150,12 @@ func GenSK(partyID uint64, Q G2, bAlpha *big.Int) (DK){
 
 // BE key generation function. Takes as input the number of parties
 
-func KeyGen(numParties uint64) (PK, []DK){
+func KeyGen(numParties int) (PK, []DK){
 	_, _, gen1Aff, gen2Aff := Generators()
 	var bAlpha *big.Int
 	var bX *big.Int
 	var pk PK
-	var i uint64
+	var i int
 	// generate uniform (secret) alpha and x
 	bAlpha = randBigInt()
 	bX = randBigInt()
@@ -144,11 +171,11 @@ func KeyGen(numParties uint64) (PK, []DK){
 
 // BE encryption. Takes as input the public key, the plaintext and the target set of parties
 
-func Encrypt(pk PK, plaintext string, setR []uint64) (CT){
+func Encrypt(pk PK, plaintext []byte, setR []int) (CT){
 	var bR *big.Int
 	var ct CT
 	var h2Temp G2
-	var j uint64
+	var j int
 	// generate r (encryption randomness)
 	bR = randBigInt()
 	// h1 = P^r
@@ -181,13 +208,13 @@ func Encrypt(pk PK, plaintext string, setR []uint64) (CT){
 
 // BE decryption function. Takes as input the public key, a decryption key, a ciphertext and the target set
 
-func Decrypt(pk PK, dk DK, ct CT, setR []uint64) (string){
+func Decrypt(pk PK, dk DK, ct CT, setR []int) (string){
 	if dk.partyID > pk.N || dk.partyID < 0{
 		fmt.Println("Decryption index out of bounds")
 		return ""
 	}
 	var aux G2
-	var j uint64
+	var j int
 	// generate Q_i.P*
 	aux.Set(&dk.dk)
 	for i := 0; i < len(setR); i++{
@@ -220,16 +247,49 @@ func Decrypt(pk PK, dk DK, ct CT, setR []uint64) (string){
 	return plaintext
 }
 
+func BenchmarkEncAndDec(numParties int, subsetSize int, numTests int, pk PK, dkArray []DK, plaintext []byte, keyGenTime int64){
+	/*const numTests = 10
+	fmt.Println("Starting keygen.......")
+	pk, _ := KeyGen(numParties)
+	fmt.Println("Key generated.......\n")
+	fmt.Println("Starting encryptions.......")*/
+	totalTimeEnc := int64(0)
+	totalTimeDec := int64(0)
+	for test := 0; test < numTests; test++{
+		setR := randSet(numParties, subsetSize)
+		// timing code start for encryption
+		startTime := time.Now()
+		ct := Encrypt(pk, plaintext, setR)
+		endTime := time.Now()
+		elapsedTime := endTime.Sub(startTime)
+		//fmt.Println(elapsedTime.Milliseconds())
+		totalTimeEnc += elapsedTime.Milliseconds()
+
+		// timing code start for decryption
+		startTime = time.Now()
+		plaintextDec := Decrypt(pk, dkArray[setR[0] - 1], ct, setR) // pass decrypting id-1 as parameter to dkArray
+		endTime = time.Now()
+		elapsedTime = endTime.Sub(startTime)
+		totalTimeDec += elapsedTime.Milliseconds()
+
+		if !bytes.Equal(plaintext, []byte(plaintextDec)) {
+			fmt.Printf("Decrypted ciphertext '%s' does not match original plaintext '%s'. Exiting!!!\n", string(plaintextDec), string(plaintext))
+			os.Exit(1)
+		}
+	}
+	fmt.Printf("%d,%d,%d,%d,%d,%d\n", numParties, subsetSize, totalTimeEnc, totalTimeDec, numTests, keyGenTime)
+}
+
 // sample BE test for 500 parties and a subset of size 10
 
 func TestBEncDec(){
-	var numParties uint64
+	var numParties int
 	numParties = 500
 	pk, dkArray := KeyGen(numParties)
 
 	plaintext := "Hello World"
-	setR := []uint64{3, 15, 27, 61, 93, 119, 235, 356, 489, 497}
-	ct := Encrypt(pk, plaintext, setR)
+	setR := []int{3, 15, 27, 61, 93, 119, 235, 356, 489, 497}
+	ct := Encrypt(pk, []byte(plaintext), setR)
 	fmt.Println("Plaintext encrypted: ", plaintext, "\n")
 
 	plaintextDec := Decrypt(pk, dkArray[234], ct, setR) // pass decrypting id-1 as parameter to dkArray
@@ -240,6 +300,7 @@ func TestBEncDec(){
 		fmt.Println("Decryption failed\n")
 	}
 }
+
 
 
 
